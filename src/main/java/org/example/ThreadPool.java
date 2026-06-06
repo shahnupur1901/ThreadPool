@@ -49,11 +49,11 @@ public class ThreadPool {
         @Override
         public void run(){
             while (true) {
-                if (shutdown && taskQueue.isEmpty()) {
+                if (shutdown) {
                     break;
                 }
                 try {
-                    FutureTask<?> futureTask = taskQueue.poll(30, TimeUnit.MILLISECONDS);
+                    FutureTask<?> futureTask = taskQueue.take();
                     futureTask.run();
                 } catch (InterruptedException e) {
                     throw new RuntimeException(e);
