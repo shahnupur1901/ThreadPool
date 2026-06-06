@@ -5,58 +5,85 @@ import java.util.List;
 import java.util.concurrent.*;
 
 public class ThreadPool {
-    // list of tasks to be supported
-    private LinkedBlockingQueue<FutureTask<?>> taskQueue;
-    private int poolSize;
-    private List<Thread> threads;
-    private volatile boolean shutdown = false;
 
-    public ThreadPool(int poolSize) {
-        this.poolSize = poolSize;
-        taskQueue = new LinkedBlockingQueue<>(poolSize);
-        threads = new ArrayList<>();
-        for (int i = 0 ; i < poolSize ; i++) {
-            Worker worker = new Worker();
-            Thread thread = new Thread(worker);
-            threads.add(thread);
-            thread.run();
+    private final BlockingQueue<FutureTask<?>> taskQueue;
+    private final List<Thread> workers;
+
+    private volatile boolean shutdown;
+
+    public ThreadPool(int poolSize, int queueSize) {
+        this.taskQueue = new LinkedBlockingQueue<>(queueSize);
+        this.workers = new ArrayList<>(poolSize);
+
+        for (int i = 0; i < poolSize; i++) {
+            Thread worker = new Thread(new Worker(), "worker-" + i);
+            workers.add(worker);
+            worker.start(); // FIX: start(), not run()
         }
     }
 
-    public FutureTask<?> submitTask (Callable<?> callable) throws InterruptedException {
-        if (shutdown) throw new IllegalStateException();
-        // wrap it in a FutureTask
-        FutureTask<?> futureTask = new FutureTask<>(callable);
-        if (taskQueue.offer(futureTask, 30, TimeUnit.MILLISECONDS)) {
-            return futureTask;
+    public <T> Future<T> submit(Callable<T> callable)
+            throws InterruptedException {
+
+        if (shutdown) {
+            throw new IllegalStateException("ThreadPool is shut down");
         }
-        throw new RuntimeException();
+
+        FutureTask<T> task = new FutureTask<>(callable);
+
+        if (!taskQueue.offer(task, 30, TimeUnit.MILLISECONDS)) {
+            throw new RejectedExecutionException("Queue is full");
+        }
+
+        return task;
     }
 
     public void shutdown() {
-
         shutdown = true;
 
-        for (Thread thread : threads) {
-            thread.interrupt();
+        // Wake up workers blocked on take()
+        for (Thread worker : workers) {
+            worker.interrupt();
         }
     }
 
-    // Runnable is just a unit of work = WHAT to execute
-    // It is executed on a thread.
+    public void awaitTermination() throws InterruptedException {
+        for (Thread worker : workers) {
+            worker.join();
+        }
+    }
 
-    class Worker implements Runnable {
+    private class Worker implements Runnable {
+
         @Override
-        public void run(){
+        public void run() {
+
             while (true) {
-                if (shutdown) {
+
+                // Graceful shutdown:
+                // exit only after shutdown requested
+                // and all queued tasks are processed
+                if (shutdown && taskQueue.isEmpty()) {
                     break;
                 }
+
                 try {
-                    FutureTask<?> futureTask = taskQueue.take();
-                    futureTask.run();
+                    FutureTask<?> task =
+                            taskQueue.poll(500, TimeUnit.MILLISECONDS);
+
+                    if (task != null) {
+                        task.run();
+                    }
+
                 } catch (InterruptedException e) {
-                    throw new RuntimeException(e);
+
+                    // During shutdown we expect interrupts
+                    if (shutdown) {
+                        continue;
+                    }
+
+                    Thread.currentThread().interrupt();
+                    break;
                 }
             }
         }
